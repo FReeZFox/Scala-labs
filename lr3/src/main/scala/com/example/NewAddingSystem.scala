@@ -10,36 +10,39 @@ object AddingServer {
 
   def apply(): Behavior[AddRequest] = Behaviors.receive { (context, message) =>
     val result = message.a + message.b
-    context.log.info(s"Addition: ${message.a} + ${message.b} = $result")
+    context.log.info(s"Sum: ${message.a} + ${message.b} = $result")
     message.replyTo ! AddResponse(result) 
     Behaviors.same
   }
 }
 
 object AddingClient {
-  final case class Command(action: String, result: Option[Int] = None)
+  enum CommandType:
+    case Start, Response
+
+  case class Command(action: CommandType, data: Option[(Int, String)] = None)
 
   def apply(server: ActorRef[AddingServer.AddRequest]): Behavior[Command] = Behaviors.setup { (context) =>
     def sendRandomNumbers(): Unit = {
       val a = Random.nextInt(100)
       val b = Random.nextInt(100)
-      context.log.info(s"Sending numbers: $a and $b to server")
-      server ! AddingServer.AddRequest(a, b, context.messageAdapter(r => Command("response", Some(r.result))))
+      context.log.info(s"Sending numbers $a and $b to server")
+      server ! AddingServer.AddRequest(a, b, context.messageAdapter(r => 
+        Command(CommandType.Response, Some((r.result, s"Numbers $a and $b")))
+      ))
     }
 
-    Behaviors.receiveMessage { (message) =>
-      message match {
-        case Command("start", _) =>
-          sendRandomNumbers()
-          Behaviors.same
+    Behaviors.receiveMessage {
+      case Command(CommandType.Start, _) =>
+        sendRandomNumbers()
+        Behaviors.same
 
-        case Command("response", Some(result)) =>
-          context.log.info(s"Result of addition: $result")
-          Behaviors.same
+      case Command(CommandType.Response, Some((result, message))) =>
+        context.log.info(s"$message have a sum of $result")
+        Behaviors.same
 
-        case _ =>
-          Behaviors.same
-      }
+      case _ =>
+        Behaviors.same
     }
   }
 }
@@ -49,11 +52,12 @@ object AddingSystem {
     val server = context.spawn(AddingServer(), "server")
 
     (1 to 3)
-    .foreach(i => context
+    .foreach { i => context
     .spawn(AddingClient(server), s"client-$i") 
-    ! AddingClient.Command("start"))
+    ! AddingClient.Command(AddingClient.CommandType.Start)
+    }
 
-    Behaviors.empty 
+    Behaviors.empty
   }
 }
 

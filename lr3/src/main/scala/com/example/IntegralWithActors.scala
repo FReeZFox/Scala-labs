@@ -20,58 +20,63 @@ object IntegralActor {
 
 object SumActor {
   case class AddPartialResult(partialSum: Double)
-  case class FinalResult(result: Double)
 
-  def apply(): Behavior[AddPartialResult] = Behaviors.setup { (context) =>
-    var totalSum = 0.0
+  def apply(totalParts: Int, replyTo: ActorRef[Double]): Behavior[AddPartialResult] = Behaviors.setup { (context) =>
+    def process(currentSum: Double, remainingParts: Int): Behavior[AddPartialResult] = {
+      Behaviors.receiveMessage {
+        case AddPartialResult(partialSum) =>
+          val updatedSum = currentSum + partialSum
+          context.log.info(s"Partial sum: $partialSum, remaining parts: ${remainingParts - 1}")
 
-    Behaviors.receiveMessage {
-      case AddPartialResult(partialSum) => 
-        totalSum += partialSum
-        context.log.info(s"Partial sum: $partialSum, current total: $totalSum")
-
-        if (totalSum != 0.0) {
-          context.log.info(s"Final result: $totalSum")
-        }
-        Behaviors.same
+          if (remainingParts - 1 == 0) {
+            replyTo ! updatedSum
+            Behaviors.stopped
+          } else {
+            process(updatedSum, remainingParts - 1)
+          }
+      }
     }
+
+    process(0.0, totalParts)
+  }
+}
+
+object FinalSum {
+  def apply(): Behavior[Double] = Behaviors.receive { (context, result) =>
+    context.log.info(s"Final sum: $result")
+    Behaviors.same
   }
 }
 
 object MainActor {
   case class StartCalculation(f: Double => Double, l: Double, r: Double, steps: Int)
 
-  def apply(): Behavior[StartCalculation] = Behaviors.setup { (context) =>
+  def apply(): Behavior[StartCalculation] = Behaviors.setup { context =>
     val integralActor = context.spawn(IntegralActor(), "integralActor")
-    val sumActor = context.spawn(SumActor(), "sumActor")
-
-    def sendCalculation(
-      f: Double => Double, 
-      start: Double, 
-      stepSize: Double, 
-      steps: Int, 
-      replyTo: ActorRef[IntegralActor.Result]
-    ): Unit = {
-      integralActor ! IntegralActor.Calculate(f, start, stepSize, steps, replyTo)
-    }
 
     Behaviors.receiveMessage {
       case StartCalculation(f, l, r, steps) =>
         val stepSize = (r - l) / steps
-        val numActors = 4 
+        val numActors = 4
+
+        val finalSum = context.spawn(FinalSum(), "finalSum")
+        val sumActor = context.spawn(SumActor(numActors, finalSum), "sumActor")
+
+        def sendCalculation(start: Double, steps: Int, replyTo: ActorRef[IntegralActor.Result]): Unit =
+          integralActor ! IntegralActor.Calculate(f, start, stepSize, steps, replyTo)
 
         (0 until numActors)
         .foreach { i =>
           val start = l + i * (steps / numActors) * stepSize
-          val numSteps = steps / numActors
           val replyTo = context.spawn(Behaviors.receiveMessage[IntegralActor.Result] {
             case IntegralActor.Result(partialSum) =>
               sumActor ! SumActor.AddPartialResult(partialSum)
               Behaviors.same
-          }, s"responseActor-${i}")
+          }, s"responseActor-$i")
 
-          sendCalculation(f, start, stepSize, numSteps, replyTo)
+          sendCalculation(start, steps / numActors, replyTo)
         }
+        
         Behaviors.same
     }
   }
